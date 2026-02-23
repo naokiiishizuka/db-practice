@@ -62,6 +62,10 @@ This repository contains a minimal Docker-based setup for experimenting with rel
   ```bash
   ./scripts/migrate.sh sql --file sql/debug_comments.sql
   ```
+- Store frequently used queries under the `./sql` directory and call them by name (extension optional):
+  ```bash
+  ./scripts/migrate.sh sql --name show_comments   # runs sql/show_comments.sql
+  ```
 - Results are printed in a simple table. For non-`SELECT` statements, the affected row count is shown.
 
 ### Useful Commands

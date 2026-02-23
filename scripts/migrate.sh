@@ -16,7 +16,7 @@ Commands:
   create <name>
   seed run [--name id]
   seed create <name>
-  sql (--query "SQL" | --file path/to.sql)
+  sql (--query "SQL" | --file path/to.sql | --name preset)
 USAGE
   exit 1
 fi

@@ -12,6 +12,7 @@ import psycopg
 BASE_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = BASE_DIR / "migrations"
 SEEDS_DIR = BASE_DIR / "seeds"
+SQL_DIR = BASE_DIR / "sql"
 MIGRATION_PATTERN = re.compile(
     r"^(?P<version>\d{4,})_(?P<name>[a-zA-Z0-9_]+)\.(?P<direction>up|down)\.sql$"
 )
@@ -56,6 +57,11 @@ def ensure_migrations_dir() -> None:
 def ensure_seeds_dir() -> None:
     if not SEEDS_DIR.exists():
         SEEDS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_sql_dir() -> None:
+    if not SQL_DIR.exists():
+        SQL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def discover_migrations() -> List[Migration]:
@@ -121,7 +127,11 @@ def read_sql_file(path: Path) -> str:
     return sql
 
 
-def read_raw_sql(input_path: Optional[str], inline_query: Optional[str]) -> str:
+def read_raw_sql(
+    input_path: Optional[str] = None,
+    inline_query: Optional[str] = None,
+    named_query: Optional[str] = None,
+) -> str:
     if input_path:
         path = Path(input_path)
         if not path.is_absolute():
@@ -132,9 +142,19 @@ def read_raw_sql(input_path: Optional[str], inline_query: Optional[str]) -> str:
         if not content:
             raise SystemExit(f"SQL file is empty: {path}")
         return content
+    if named_query:
+        ensure_sql_dir()
+        filename = named_query if named_query.endswith(".sql") else f"{named_query}.sql"
+        path = SQL_DIR / filename
+        if not path.exists():
+            raise SystemExit(f"SQL preset not found: {path}")
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            raise SystemExit(f"SQL file is empty: {path}")
+        return content
     if inline_query:
         return inline_query.strip()
-    raise SystemExit("Either --file or --query must be provided.")
+    raise SystemExit("Either --file, --query, or --name must be provided.")
 
 
 def format_value(value: object) -> str:
@@ -355,6 +375,11 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         "--file",
         help="Path to a .sql file containing statements to execute",
     )
+    sql_source.add_argument(
+        "-n",
+        "--name",
+        help="Name of a SQL file under ./sql (extension optional)",
+    )
 
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -369,10 +394,12 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     if args.command == "seed" and args.seed_command == "create":
         create_seed(args.name)
         return
-    if args.command == "sql" and args.file:
-        sql_text = read_raw_sql(args.file, None)
-    elif args.command == "sql":
-        sql_text = read_raw_sql(None, args.query)
+    if args.command == "sql":
+        sql_text = read_raw_sql(
+            input_path=args.file,
+            inline_query=args.query,
+            named_query=args.name,
+        )
     else:
         sql_text = None
 
