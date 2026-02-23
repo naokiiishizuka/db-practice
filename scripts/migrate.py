@@ -2,9 +2,7 @@
 import argparse
 import os
 import re
-import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -13,9 +11,11 @@ import psycopg
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = BASE_DIR / "migrations"
+SEEDS_DIR = BASE_DIR / "seeds"
 MIGRATION_PATTERN = re.compile(
     r"^(?P<version>\d{4,})_(?P<name>[a-zA-Z0-9_]+)\.(?P<direction>up|down)\.sql$"
 )
+SEED_PATTERN = re.compile(r"^(?P<version>\d{3,})_(?P<name>[a-zA-Z0-9_]+)\.sql$")
 
 
 @dataclass
@@ -24,6 +24,13 @@ class Migration:
     name: str
     up_path: Path
     down_path: Path
+
+
+@dataclass
+class SeedFile:
+    version: int
+    name: str
+    path: Path
 
 
 def load_environment() -> None:
@@ -44,6 +51,11 @@ def require_database_url() -> str:
 def ensure_migrations_dir() -> None:
     if not MIGRATIONS_DIR.exists():
         MIGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_seeds_dir() -> None:
+    if not SEEDS_DIR.exists():
+        SEEDS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def discover_migrations() -> List[Migration]:
@@ -77,6 +89,18 @@ def discover_migrations() -> List[Migration]:
     return migrations
 
 
+def discover_seeds() -> List[SeedFile]:
+    ensure_seeds_dir()
+    seeds: List[SeedFile] = []
+    for path in sorted(SEEDS_DIR.glob("*.sql")):
+        match = SEED_PATTERN.match(path.name)
+        if not match:
+            raise SystemExit(f"Invalid seed filename: {path.name}")
+        version = int(match["version"])
+        seeds.append(SeedFile(version=version, name=match["name"], path=path))
+    return sorted(seeds, key=lambda s: s.version)
+
+
 def ensure_schema_table(conn: psycopg.Connection) -> None:
     conn.execute(
         """
@@ -95,6 +119,59 @@ def read_sql_file(path: Path) -> str:
     if not sql:
         raise SystemExit(f"Migration file is empty: {path}")
     return sql
+
+
+def read_raw_sql(input_path: Optional[str], inline_query: Optional[str]) -> str:
+    if input_path:
+        path = Path(input_path)
+        if not path.is_absolute():
+            path = (BASE_DIR / path).resolve()
+        if not path.exists():
+            raise SystemExit(f"SQL file not found: {path}")
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            raise SystemExit(f"SQL file is empty: {path}")
+        return content
+    if inline_query:
+        return inline_query.strip()
+    raise SystemExit("Either --file or --query must be provided.")
+
+
+def format_value(value: object) -> str:
+    if value is None:
+        return "NULL"
+    return str(value)
+
+
+def print_result_table(columns: List[str], rows: List[List[object]]) -> None:
+    if not columns:
+        print("(no columns)")
+        return
+    str_rows = [[format_value(value) for value in row] for row in rows]
+    widths = [len(col) for col in columns]
+    for row in str_rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+    header = " | ".join(col.ljust(widths[idx]) for idx, col in enumerate(columns))
+    print(header)
+    print("-+-".join("-" * width for width in widths))
+    for row in str_rows:
+        print(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
+    if not rows:
+        print("(0 rows)")
+
+
+def run_sql(conn: psycopg.Connection, sql: str) -> None:
+    with conn.transaction():
+        cur = conn.execute(sql, prepare=False)
+        if cur.description:
+            columns = [desc.name or f"column_{idx}" for idx, desc in enumerate(cur.description)]
+            rows = cur.fetchall()
+            print_result_table(columns, rows)
+            print(f"\n{len(rows)} row(s).")
+        else:
+            affected = cur.rowcount if cur.rowcount != -1 else 0
+            print(f"Command completed. {affected} row(s) affected.")
 
 
 def apply_up(conn: psycopg.Connection, target: Optional[int]) -> None:
@@ -195,6 +272,40 @@ def create_migration(name: str) -> None:
     print(f"Created {up_path.name} and {down_path.name}")
 
 
+def create_seed(name: str) -> None:
+    ensure_seeds_dir()
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip()).strip("_").lower()
+    if not normalized:
+        raise SystemExit("Seed name must contain alphanumeric characters.")
+    seeds = discover_seeds()
+    next_version = (seeds[-1].version + 1) if seeds else 1
+    version_str = f"{next_version:03d}"
+    filename = f"{version_str}_{normalized}.sql"
+    path = SEEDS_DIR / filename
+    template = "-- Insert seed data here\n"
+    path.write_text(template, encoding="utf-8")
+    print(f"Created seed file {filename}")
+
+
+def run_seeds(conn: psycopg.Connection, name: Optional[str]) -> None:
+    seeds = discover_seeds()
+    if not seeds:
+        print("No seed files found in ./seeds")
+        return
+    for seed in seeds:
+        identifier = f"{seed.version:03d}_{seed.name}"
+        if name and identifier != name:
+            continue
+        sql = read_sql_file(seed.path)
+        with conn.transaction():
+            conn.execute(sql)
+        print(f"Ran seed {identifier}")
+    if name:
+        matching = any(f"{seed.version:03d}_{seed.name}" == name for seed in seeds)
+        if not matching:
+            raise SystemExit(f"Seed file matching '{name}' not found.")
+
+
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simple PostgreSQL migration runner.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -218,6 +329,33 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     create_parser = subparsers.add_parser("create", help="Generate new migration files")
     create_parser.add_argument("name", help="Name for the migration (snake_case)")
 
+    seed_parser = subparsers.add_parser("seed", help="Manage seed SQL files")
+    seed_sub = seed_parser.add_subparsers(dest="seed_command", required=True)
+
+    seed_run = seed_sub.add_parser("run", help="Execute seed SQL files")
+    seed_run.add_argument(
+        "--name",
+        help="Specific seed identifier to run (e.g. 001_initial_data). Runs all if omitted.",
+    )
+
+    seed_create = seed_sub.add_parser("create", help="Generate a new seed SQL file")
+    seed_create.add_argument("name", help="Name for the seed file")
+
+    sql_parser = subparsers.add_parser(
+        "sql", help="Run arbitrary SQL and print the results to the terminal"
+    )
+    sql_source = sql_parser.add_mutually_exclusive_group(required=True)
+    sql_source.add_argument(
+        "-q",
+        "--query",
+        help="Inline SQL to execute (wrap in quotes). Example: --query \"SELECT * FROM users\"",
+    )
+    sql_source.add_argument(
+        "-f",
+        "--file",
+        help="Path to a .sql file containing statements to execute",
+    )
+
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -228,6 +366,15 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     if args.command == "create":
         create_migration(args.name)
         return
+    if args.command == "seed" and args.seed_command == "create":
+        create_seed(args.name)
+        return
+    if args.command == "sql" and args.file:
+        sql_text = read_raw_sql(args.file, None)
+    elif args.command == "sql":
+        sql_text = read_raw_sql(None, args.query)
+    else:
+        sql_text = None
 
     database_url = require_database_url()
     with psycopg.connect(database_url) as conn:
@@ -239,6 +386,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             show_version(conn)
         elif args.command == "status":
             show_status(conn)
+        elif args.command == "seed" and args.seed_command == "run":
+            run_seeds(conn, args.name)
+        elif args.command == "sql":
+            run_sql(conn, sql_text)
         else:
             raise SystemExit(f"Unknown command {args.command}")
 

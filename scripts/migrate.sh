@@ -14,6 +14,9 @@ Commands:
   status
   version
   create <name>
+  seed run [--name id]
+  seed create <name>
+  sql (--query "SQL" | --file path/to.sql)
 USAGE
   exit 1
 fi
@@ -21,13 +24,22 @@ fi
 CMD="$1"
 shift || true
 
-if [[ "${CMD}" != "create" && ! -f ".env" ]]; then
+REQUIRES_ENV=true
+if [[ "${CMD}" == "create" ]]; then
+  REQUIRES_ENV=false
+elif [[ "${CMD}" == "seed" && "${1:-}" == "create" ]]; then
+  REQUIRES_ENV=false
+fi
+
+if [[ "${REQUIRES_ENV}" == true && ! -f ".env" ]]; then
   echo "Missing .env file. Copy .env.example to .env first." >&2
   exit 1
 fi
 
 if [[ "${CMD}" == "create" ]]; then
   docker compose run --rm --no-deps migrator create "$@"
+elif [[ "${CMD}" == "seed" && "${1:-}" == "create" ]]; then
+  docker compose run --rm --no-deps migrator seed "$@"
 else
   docker compose run --rm migrator "${CMD}" "$@"
 fi

@@ -35,6 +35,35 @@ This repository contains a minimal Docker-based setup for experimenting with rel
   This generates the matching `*.up.sql` and `*.down.sql` files under `./migrations`, so you do not have to create them manually.
 - Edit those files to describe the schema changes. The runner applies every `*.up.sql` file in numerical order and records its progress in the `schema_migrations` table.
 
+### Seeding Data
+
+- Seed files live under `./seeds` and follow the naming pattern `NNN_name.sql`.
+- Run all seeds (after applying migrations) with:
+  ```bash
+  ./scripts/migrate.sh seed run
+  ```
+- Run a specific seed file by name (e.g. `001_initial_users`):
+  ```bash
+  ./scripts/migrate.sh seed run --name 001_initial_users
+  ```
+- Create a new seed template without writing SQL manually:
+  ```bash
+  ./scripts/migrate.sh seed create add_demo_data
+  ```
+- Edit the generated SQL to insert/update the rows you need. Each seed runs inside a transaction, so use `INSERT ... ON CONFLICT` if you want it to be idempotent.
+
+### Running Ad-hoc SQL
+
+- Execute inline SQL and see the output directly in your terminal:
+  ```bash
+  ./scripts/migrate.sh sql --query "SELECT * FROM comments ORDER BY comment_id"
+  ```
+- Run all statements from a `.sql` file (path can be relative to the repo root):
+  ```bash
+  ./scripts/migrate.sh sql --file sql/debug_comments.sql
+  ```
+- Results are printed in a simple table. For non-`SELECT` statements, the affected row count is shown.
+
 ### Useful Commands
 
 ```bash
@@ -46,6 +75,12 @@ docker compose up db migrator
 
 # Show applied vs pending migrations
 ./scripts/migrate.sh status
+
+# Seed sample data
+./scripts/migrate.sh seed run
+
+# Run ad-hoc SQL
+./scripts/migrate.sh sql --query "SELECT COUNT(*) FROM users"
 
 # Reset the database to a clean state (deletes volume data!)
 docker compose down -v

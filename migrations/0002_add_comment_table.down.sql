@@ -1,1 +1,1 @@
--- Write your SQL here
+DROP TABLE IF EXISTS comments;
