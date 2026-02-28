@@ -18,3 +18,4 @@ VALUES
     (6, 6),
     (6, 7),
     (7, 7)
+ON CONFLICT (ancestor, descendant) DO NOTHING;
